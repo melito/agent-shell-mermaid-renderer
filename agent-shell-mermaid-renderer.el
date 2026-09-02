@@ -4,14 +4,14 @@
 
 ;; Author: Mel Gray
 ;; Keywords: multimedia, mermaid, agent-shell, llm
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "29.1") (agent-shell "0.66.0"))
 ;; URL: https://github.com/melito/agent-shell-mermaid-renderer
 
 ;;; Commentary:
 ;; Renders ```mermaid fenced code blocks in `agent-shell' as inline SVG diagrams.
 ;; Uses an asynchronous backend (defaulting to `mmdc' / mermaid-cli) with disk caching
-;; and a generic backend dispatch husk for future extensibility (e.g. Kroki HTTP, Docker).
+;; and theme-aware CSS injection to ensure high contrast in librsvg.
 
 ;;; Code:
 
@@ -71,10 +71,55 @@ When `auto', detects dark vs light background mode from current frame."
                  (integer :tag "Pixels"))
   :group 'agent-shell-mermaid)
 
+(defcustom agent-shell-mermaid-custom-css nil
+  "Optional custom CSS string to inject into diagrams via `--cssFile'."
+  :type '(choice (const :tag "None (use built-in theme styles)" nil)
+                 (string :tag "Custom CSS"))
+  :group 'agent-shell-mermaid)
+
 (defface agent-shell-mermaid-face
   '((t :inherit font-lock-doc-face))
   "Face applied to raw Mermaid code blocks under the diagram overlay."
   :group 'agent-shell-mermaid)
+
+;;; CSS Definitions for High-Contrast librsvg Rendering
+
+(defconst agent-shell-mermaid--dark-css
+  ".nodeLabel p, span.nodeLabel, .nodeLabel, div, foreignObject {
+  color: #f0f6fc !important;
+  fill: #f0f6fc !important;
+}
+text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
+  fill: #f0f6fc !important;
+  color: #f0f6fc !important;
+}
+.node rect, .node circle, .node polygon, .node path {
+  fill: #21262d !important;
+  stroke: #58a6ff !important;
+  stroke-width: 1.5px !important;
+}
+.actor {
+  fill: #21262d !important;
+  stroke: #58a6ff !important;
+}
+.actor-line {
+  stroke: #8b949e !important;
+}
+.messageLine0, .messageLine1 {
+  stroke: #8b949e !important;
+}"
+  "Default CSS applied for dark frames to fix foreignObject text contrast in librsvg.")
+
+(defconst agent-shell-mermaid--light-css
+  ".nodeLabel p, span.nodeLabel, .nodeLabel, div, foreignObject {
+  color: #1f2328 !important;
+  fill: #1f2328 !important;
+}
+text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
+  fill: #1f2328 !important;
+  color: #1f2328 !important;
+}"
+  "Default CSS applied for light frames.")
 
 ;;; Theme & Cache Helpers
 
@@ -86,12 +131,20 @@ When `auto', detects dark vs light background mode from current frame."
         "default")
     agent-shell-mermaid-theme))
 
+(defun agent-shell-mermaid--resolved-css ()
+  "Return active CSS string (custom or auto-selected theme CSS)."
+  (or agent-shell-mermaid-custom-css
+      (if (string= (agent-shell-mermaid--resolved-theme) "dark")
+          agent-shell-mermaid--dark-css
+        agent-shell-mermaid--light-css)))
+
 (defun agent-shell-mermaid--cache-file (source)
-  "Return destination SVG path for SOURCE string and active theme."
+  "Return destination SVG path for SOURCE string, active theme, and CSS."
   (unless (file-directory-p agent-shell-mermaid-cache-directory)
     (make-directory agent-shell-mermaid-cache-directory t))
   (let* ((theme (agent-shell-mermaid--resolved-theme))
-         (hash (secure-hash 'sha256 (format "%s::%s" theme (string-trim source)))))
+         (css (agent-shell-mermaid--resolved-css))
+         (hash (secure-hash 'sha256 (format "v2::%s::%s::%s" theme css (string-trim source)))))
     (expand-file-name (format "%s.svg" hash) agent-shell-mermaid-cache-directory)))
 
 ;;; Backend Dispatch Husk
@@ -108,6 +161,7 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
              agent-shell-mermaid-mmdc-executable)
     (funcall callback nil))
   (let* ((temp-input (make-temp-file "agent-shell-mmd-" nil ".mmd" source))
+         (temp-css (make-temp-file "agent-shell-css-" nil ".css" (agent-shell-mermaid--resolved-css)))
          (theme (agent-shell-mermaid--resolved-theme))
          (proc-buffer (generate-new-buffer " *agent-shell-mermaid-mmdc*")))
     (make-process
@@ -117,10 +171,12 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
                     "-i" temp-input
                     "-o" output-file
                     "-t" theme
+                    "-C" temp-css
                     "-b" "transparent")
      :sentinel (lambda (proc _event)
                  (when (eq (process-status proc) 'exit)
                    (delete-file temp-input)
+                   (delete-file temp-css)
                    (if (and (= (process-exit-status proc) 0)
                             (file-exists-p output-file))
                        (funcall callback output-file)
