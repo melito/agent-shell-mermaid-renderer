@@ -4,18 +4,19 @@
 
 ;; Author: Mel Gray
 ;; Keywords: multimedia, mermaid, agent-shell, llm
-;; Version: 0.2.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "29.1") (agent-shell "0.66.0"))
 ;; URL: https://github.com/melito/agent-shell-mermaid-renderer
 
 ;;; Commentary:
 ;; Renders ```mermaid fenced code blocks in `agent-shell' as inline SVG diagrams.
 ;; Uses an asynchronous backend (defaulting to `mmdc' / mermaid-cli) with disk caching
-;; and theme-aware CSS injection to ensure high contrast in librsvg.
+;; and native SVG text rendering (htmlLabels: false) for full librsvg compatibility.
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'json)
 (require 'map)
 (require 'seq)
 (require 'subr-x)
@@ -85,11 +86,7 @@ When `auto', detects dark vs light background mode from current frame."
 ;;; CSS Definitions for High-Contrast librsvg Rendering
 
 (defconst agent-shell-mermaid--dark-css
-  ".nodeLabel p, span.nodeLabel, .nodeLabel, div, foreignObject {
-  color: #f0f6fc !important;
-  fill: #f0f6fc !important;
-}
-text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
+  "text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
   fill: #f0f6fc !important;
   color: #f0f6fc !important;
 }
@@ -102,20 +99,13 @@ text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text 
   fill: #21262d !important;
   stroke: #58a6ff !important;
 }
-.actor-line {
-  stroke: #8b949e !important;
-}
-.messageLine0, .messageLine1 {
+.actor-line, .messageLine0, .messageLine1 {
   stroke: #8b949e !important;
 }"
-  "Default CSS applied for dark frames to fix foreignObject text contrast in librsvg.")
+  "Default CSS applied for dark frames.")
 
 (defconst agent-shell-mermaid--light-css
-  ".nodeLabel p, span.nodeLabel, .nodeLabel, div, foreignObject {
-  color: #1f2328 !important;
-  fill: #1f2328 !important;
-}
-text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
+  "text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
   fill: #1f2328 !important;
   color: #1f2328 !important;
 }"
@@ -138,13 +128,22 @@ text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text 
           agent-shell-mermaid--dark-css
         agent-shell-mermaid--light-css)))
 
+(defun agent-shell-mermaid--json-config ()
+  "Return Mermaid JSON configuration string with native SVG text enabled."
+  (let ((theme (agent-shell-mermaid--resolved-theme)))
+    (json-encode
+     `((theme . ,theme)
+       (htmlLabels . :json-false)
+       (flowchart . ((htmlLabels . :json-false)))
+       (sequence . ((useMaxWidth . :json-false)))))))
+
 (defun agent-shell-mermaid--cache-file (source)
   "Return destination SVG path for SOURCE string, active theme, and CSS."
   (unless (file-directory-p agent-shell-mermaid-cache-directory)
     (make-directory agent-shell-mermaid-cache-directory t))
   (let* ((theme (agent-shell-mermaid--resolved-theme))
          (css (agent-shell-mermaid--resolved-css))
-         (hash (secure-hash 'sha256 (format "v2::%s::%s::%s" theme css (string-trim source)))))
+         (hash (secure-hash 'sha256 (format "v3::%s::%s::%s" theme css (string-trim source)))))
     (expand-file-name (format "%s.svg" hash) agent-shell-mermaid-cache-directory)))
 
 ;;; Backend Dispatch Husk
@@ -162,6 +161,7 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
     (funcall callback nil))
   (let* ((temp-input (make-temp-file "agent-shell-mmd-" nil ".mmd" source))
          (temp-css (make-temp-file "agent-shell-css-" nil ".css" (agent-shell-mermaid--resolved-css)))
+         (temp-config (make-temp-file "agent-shell-cfg-" nil ".json" (agent-shell-mermaid--json-config)))
          (theme (agent-shell-mermaid--resolved-theme))
          (proc-buffer (generate-new-buffer " *agent-shell-mermaid-mmdc*")))
     (make-process
@@ -171,12 +171,14 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
                     "-i" temp-input
                     "-o" output-file
                     "-t" theme
+                    "-c" temp-config
                     "-C" temp-css
                     "-b" "transparent")
      :sentinel (lambda (proc _event)
                  (when (eq (process-status proc) 'exit)
                    (delete-file temp-input)
                    (delete-file temp-css)
+                   (delete-file temp-config)
                    (if (and (= (process-exit-status proc) 0)
                             (file-exists-p output-file))
                        (funcall callback output-file)
