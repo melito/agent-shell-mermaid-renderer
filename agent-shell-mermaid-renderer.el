@@ -16,6 +16,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'map)
+(require 'seq)
 (require 'subr-x)
 (eval-when-compile (require 'agent-shell-markdown nil t))
 
@@ -25,6 +27,11 @@
   :prefix "agent-shell-mermaid-")
 
 ;;; Customization
+
+(defcustom agent-shell-mermaid-enable t
+  "When non-nil, enable inline rendering of Mermaid diagrams."
+  :type 'boolean
+  :group 'agent-shell-mermaid)
 
 (defcustom agent-shell-mermaid-backend 'mmdc
   "Backend used to compile Mermaid diagrams to SVG.
@@ -156,72 +163,106 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
 
 (defun agent-shell-mermaid--apply-image (buffer start-marker end-marker svg-path source)
   "Overlay SVG-PATH image over START-MARKER..END-MARKER in BUFFER."
-  (when (and (buffer-live-p buffer) (file-exists-p svg-path))
-    (with-current-buffer buffer
-      (let ((s (marker-position start-marker))
-            (e (marker-position end-marker)))
-        (when (and s e (<= (point-min) s) (< s e) (<= e (point-max)))
-          (with-silent-modifications
-            (let ((image (create-image svg-path 'svg nil
-                                       :max-width agent-shell-mermaid-max-width
-                                       :scale 1.0)))
-              (put-text-property s e 'display image)
-              (put-text-property s e 'keymap agent-shell-mermaid-image-map)
-              (put-text-property s e 'help-echo (concat source "\n\n(Click or RET to toggle code)"))
-              (put-text-property s e 'mouse-face 'highlight))))))))
+  (unwind-protect
+      (when (and (buffer-live-p buffer) (file-exists-p svg-path))
+        (with-current-buffer buffer
+          (let ((s (if (markerp start-marker) (marker-position start-marker) start-marker))
+                (e (if (markerp end-marker) (marker-position end-marker) end-marker)))
+            (when (and s e (<= (point-min) s) (< s e) (<= e (point-max)))
+              (with-silent-modifications
+                (let ((image (create-image svg-path 'svg nil
+                                           :max-width agent-shell-mermaid-max-width
+                                           :scale 1.0))
+                      (line-prefix (get-text-property s 'line-prefix))
+                      (wrap-prefix (get-text-property s 'wrap-prefix)))
+                  (put-text-property s e 'display image)
+                  (put-text-property s e 'keymap agent-shell-mermaid-image-map)
+                  (put-text-property s e 'help-echo (concat source "\n\n(Click or RET to toggle code)"))
+                  (put-text-property s e 'mouse-face 'highlight)
+                  (when line-prefix
+                    (put-text-property s e 'line-prefix line-prefix))
+                  (when wrap-prefix
+                    (put-text-property s e 'wrap-prefix wrap-prefix))))))))
+    (when (markerp start-marker) (set-marker start-marker nil))
+    (when (markerp end-marker) (set-marker end-marker nil))))
 
-;;; Hook & Fenced Block Parsing
-
-(defconst agent-shell-mermaid--fence-regex
-  "^\\([ \t]*\\)```\\(?:mermaid\\)[ \t]*\n\\(\\(?:.\\|\n\\)*?\\)\n\\1```"
-  "Regex matching a complete, closed ```mermaid fence.")
-
-(defun agent-shell-mermaid--scan-and-render (buffer)
-  "Scan BUFFER for complete ```mermaid fences and trigger rendering."
+(defun agent-shell-mermaid--apply-region (buffer start end source)
+  "Mark BUFFER's START..END as mermaid and trigger compilation."
   (with-current-buffer buffer
-    (save-excursion
-      (goto-char (point-min))
-      (while (re-search-forward agent-shell-mermaid--fence-regex nil t)
-        (let* ((start (match-beginning 0))
-               (end (match-end 0))
-               (source (match-string-no-properties 2))
-               (frozen (get-text-property start 'agent-shell-markdown-frozen)))
-          ;; Only process blocks that haven't been tagged frozen
-          (unless (or frozen (string-blank-p source))
-            ;; Freeze region to prevent markdown parser / streaming from thrashing it
-            (add-face-text-property start end 'agent-shell-mermaid-face)
-            (put-text-property start end 'agent-shell-markdown-frozen t)
-            (let ((cache-file (agent-shell-mermaid--cache-file source))
-                  (start-m (copy-marker start))
-                  (end-m (copy-marker end t)))
-              (if (file-exists-p cache-file)
-                  (agent-shell-mermaid--apply-image buffer start-m end-m cache-file source)
-                ;; Asynchronous compilation
-                (agent-shell-mermaid-compile-backend
-                 agent-shell-mermaid-backend
-                 source
-                 cache-file
-                 (lambda (output)
-                   (when output
-                     (agent-shell-mermaid--apply-image buffer start-m end-m output source))))))))))))
+    (add-face-text-property start end 'agent-shell-mermaid-face)
+    (add-text-properties
+     start end
+     `(help-echo ,source
+       agent-shell-mermaid-source ,source
+       agent-shell-markdown-frozen t
+       rear-nonsticky (agent-shell-markdown-frozen)))
+    (let ((cache-file (agent-shell-mermaid--cache-file source))
+          (start-m (copy-marker start))
+          (end-m (copy-marker end t)))
+      (if (file-exists-p cache-file)
+          (agent-shell-mermaid--apply-image buffer start-m end-m cache-file source)
+        (agent-shell-mermaid-compile-backend
+         agent-shell-mermaid-backend
+         source
+         cache-file
+         (lambda (output)
+           (when output
+             (agent-shell-mermaid--apply-image buffer start-m end-m output source))))))))
 
-;;; Entry Point / Hook Function
+(defun agent-shell-mermaid--render-fenced-block (buffer start end source)
+  "Trim START..END around fenced block and render SOURCE in BUFFER."
+  (with-current-buffer buffer
+    (let ((s (save-excursion (goto-char start) (skip-chars-forward "\n") (point)))
+          (e (if (eq (char-before end) ?\n) (1- end) end)))
+      (when (< s e)
+        (agent-shell-mermaid--apply-region buffer s e source)))))
 
-(defun agent-shell-mermaid-renderer--render-hook (&rest _args)
+(defun agent-shell-mermaid-renderer--render-context (context)
+  "Render mermaid fences from CONTEXT alist."
+  (let ((source-blocks (map-elt context :source-blocks)))
+    (dolist (sb source-blocks)
+      (when-let* ((lang (or (map-elt sb :language) (map-elt sb :info)))
+                  ((string= (downcase (string-trim lang)) "mermaid"))
+                  ((map-elt sb :complete))
+                  (start (map-nested-elt sb '(:block :start)))
+                  (end (map-nested-elt sb '(:block :end)))
+                  ((not (get-text-property start 'agent-shell-markdown-frozen)))
+                  (body (map-elt sb :body))
+                  (source (string-trim body))
+                  ((not (string-empty-p source))))
+        (agent-shell-mermaid--render-fenced-block (current-buffer) start end source)))))
+
+;;; Hook & Minor Mode
+
+(defun agent-shell-mermaid-renderer--render-hook (context)
   "Hook function called by `agent-shell-markdown' on streaming markdown chunks."
-  (when (and (display-graphic-p) (derived-mode-p 'agent-shell-mode))
-    (agent-shell-mermaid--scan-and-render (current-buffer))))
-
-;;; Minor Mode
+  (when (and (display-graphic-p)
+             (or (bound-and-true-p agent-shell-mermaid-renderer-mode)
+                 agent-shell-mermaid-enable))
+    (agent-shell-mermaid-renderer--render-context context)))
 
 ;;;###autoload
 (define-minor-mode agent-shell-mermaid-renderer-mode
-  "Global minor mode to render Mermaid diagrams inline in `agent-shell`."
-  :global t
-  :group 'agent-shell-mermaid
+  "Render Mermaid diagrams in this `agent-shell' buffer's markdown output.
+Enable it per buffer from `agent-shell-mode-hook':
+  (add-hook 'agent-shell-mode-hook #'agent-shell-mermaid-renderer-mode)"
+  :lighter nil
   (if agent-shell-mermaid-renderer-mode
-      (add-hook 'agent-shell-markdown-render-functions #'agent-shell-mermaid-renderer--render-hook)
-    (remove-hook 'agent-shell-markdown-render-functions #'agent-shell-mermaid-renderer--render-hook)))
+      (add-hook 'agent-shell-markdown-render-functions
+                #'agent-shell-mermaid-renderer--render-hook nil t)
+    (remove-hook 'agent-shell-markdown-render-functions
+                 #'agent-shell-mermaid-renderer--render-hook t)))
+
+;;;###autoload
+(defun agent-shell-mermaid-renderer-setup ()
+  "Enable Mermaid rendering globally across all `agent-shell' buffers."
+  (interactive)
+  (add-hook 'agent-shell-mode-hook #'agent-shell-mermaid-renderer-mode)
+  ;; Also hook into existing buffers
+  (dolist (buf (buffer-list))
+    (with-current-buffer buf
+      (when (derived-mode-p 'agent-shell-mode)
+        (agent-shell-mermaid-renderer-mode 1)))))
 
 (provide 'agent-shell-mermaid-renderer)
 ;;; agent-shell-mermaid-renderer.el ends here
