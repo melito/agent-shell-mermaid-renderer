@@ -4,18 +4,19 @@
 
 ;; Author: Mel Gray
 ;; Keywords: multimedia, mermaid, agent-shell, llm
-;; Version: 0.3.0
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "29.1") (agent-shell "0.66.0"))
 ;; URL: https://github.com/melito/agent-shell-mermaid-renderer
 
 ;;; Commentary:
 ;; Renders ```mermaid fenced code blocks in `agent-shell' as inline SVG diagrams.
-;; Uses an asynchronous backend (defaulting to `mmdc' / mermaid-cli) with disk caching
-;; and native SVG text rendering (htmlLabels: false) for full librsvg compatibility.
+;; Uses an asynchronous backend (defaulting to `mmdc' / mermaid-cli) with disk caching,
+;; native SVG text rendering (htmlLabels: false), and theme-aware CSS injection.
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'color)
 (require 'json)
 (require 'map)
 (require 'seq)
@@ -52,40 +53,23 @@ Choices:
 
 (defcustom agent-shell-mermaid-theme 'auto
   "Mermaid theme to apply when rendering diagrams.
-When `auto', detects dark vs light background mode from current frame."
-  :type '(choice (const :tag "Auto (match frame background)" auto)
+When `auto', automatically detects dark vs light background mode from current frame.
+You can also hardcode any valid Mermaid theme name:
+  \"dark\"    - Mermaid dark theme
+  \"default\" - Mermaid light theme
+  \"neutral\" - Neutral grayscale theme
+  \"forest\"  - Forest green theme
+  \"base\"    - Base unstyled theme"
+  :type '(choice (const :tag "Auto (detect dark/light from Emacs theme)" auto)
                  (const :tag "Dark" "dark")
                  (const :tag "Default (Light)" "default")
                  (const :tag "Neutral" "neutral")
-                 (const :tag "Forest" "forest"))
+                 (const :tag "Forest" "forest")
+                 (const :tag "Base" "base")
+                 (string :tag "Custom Theme Name"))
   :group 'agent-shell-mermaid)
 
-(defcustom agent-shell-mermaid-cache-directory
-  (expand-file-name "agent-shell/mermaid-cache/" user-emacs-directory)
-  "Directory where rendered SVG diagrams are cached."
-  :type 'directory
-  :group 'agent-shell-mermaid)
-
-(defcustom agent-shell-mermaid-max-width nil
-  "Maximum width in pixels for rendered diagrams, or nil for natural size."
-  :type '(choice (const :tag "Natural size" nil)
-                 (integer :tag "Pixels"))
-  :group 'agent-shell-mermaid)
-
-(defcustom agent-shell-mermaid-custom-css nil
-  "Optional custom CSS string to inject into diagrams via `--cssFile'."
-  :type '(choice (const :tag "None (use built-in theme styles)" nil)
-                 (string :tag "Custom CSS"))
-  :group 'agent-shell-mermaid)
-
-(defface agent-shell-mermaid-face
-  '((t :inherit font-lock-doc-face))
-  "Face applied to raw Mermaid code blocks under the diagram overlay."
-  :group 'agent-shell-mermaid)
-
-;;; CSS Definitions for High-Contrast librsvg Rendering
-
-(defconst agent-shell-mermaid--dark-css
+(defcustom agent-shell-mermaid-dark-css
   "text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
   fill: #f0f6fc !important;
   color: #f0f6fc !important;
@@ -102,31 +86,86 @@ When `auto', detects dark vs light background mode from current frame."
 .actor-line, .messageLine0, .messageLine1 {
   stroke: #8b949e !important;
 }"
-  "Default CSS applied for dark frames.")
+  "CSS applied to diagrams when running on a dark theme."
+  :type 'string
+  :group 'agent-shell-mermaid)
 
-(defconst agent-shell-mermaid--light-css
+(defcustom agent-shell-mermaid-light-css
   "text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
   fill: #1f2328 !important;
   color: #1f2328 !important;
+}
+.node rect, .node circle, .node polygon, .node path {
+  fill: #f6f8fa !important;
+  stroke: #0969da !important;
+  stroke-width: 1.5px !important;
+}
+.actor {
+  fill: #f6f8fa !important;
+  stroke: #0969da !important;
+}
+.actor-line, .messageLine0, .messageLine1 {
+  stroke: #57606a !important;
 }"
-  "Default CSS applied for light frames.")
+  "CSS applied to diagrams when running on a light theme."
+  :type 'string
+  :group 'agent-shell-mermaid)
+
+(defcustom agent-shell-mermaid-custom-css nil
+  "Optional custom CSS string to inject into diagrams via `--cssFile'.
+When set, overrides both `agent-shell-mermaid-dark-css' and `agent-shell-mermaid-light-css'."
+  :type '(choice (const :tag "None (use dark/light theme styles)" nil)
+                 (string :tag "Custom CSS"))
+  :group 'agent-shell-mermaid)
+
+(defcustom agent-shell-mermaid-cache-directory
+  (expand-file-name "agent-shell/mermaid-cache/" user-emacs-directory)
+  "Directory where rendered SVG diagrams are cached."
+  :type 'directory
+  :group 'agent-shell-mermaid)
+
+(defcustom agent-shell-mermaid-max-width nil
+  "Maximum width in pixels for rendered diagrams, or nil for natural size."
+  :type '(choice (const :tag "Natural size" nil)
+                 (integer :tag "Pixels"))
+  :group 'agent-shell-mermaid)
+
+(defface agent-shell-mermaid-face
+  '((t :inherit font-lock-doc-face))
+  "Face applied to raw Mermaid code blocks under the diagram overlay."
+  :group 'agent-shell-mermaid)
 
 ;;; Theme & Cache Helpers
+
+(defun agent-shell-mermaid--dark-background-p ()
+  "Return non-nil if current frame background is dark."
+  (let ((bg-mode (frame-parameter nil 'background-mode)))
+    (if (memq bg-mode '(dark light))
+        (eq bg-mode 'dark)
+      ;; Fallback: compute relative luminance of the default background color
+      (let* ((bg-color (face-attribute 'default :background nil t))
+             (rgb (and (stringp bg-color) (color-values bg-color))))
+        (if rgb
+            (< (+ (* 0.299 (nth 0 rgb))
+                  (* 0.587 (nth 1 rgb))
+                  (* 0.114 (nth 2 rgb)))
+               32768)
+          t)))))
 
 (defun agent-shell-mermaid--resolved-theme ()
   "Resolve theme string ('dark', 'default', etc.) based on user settings."
   (if (eq agent-shell-mermaid-theme 'auto)
-      (if (eq (frame-parameter nil 'background-mode) 'dark)
+      (if (agent-shell-mermaid--dark-background-p)
           "dark"
         "default")
-    agent-shell-mermaid-theme))
+    (format "%s" agent-shell-mermaid-theme)))
 
 (defun agent-shell-mermaid--resolved-css ()
   "Return active CSS string (custom or auto-selected theme CSS)."
   (or agent-shell-mermaid-custom-css
       (if (string= (agent-shell-mermaid--resolved-theme) "dark")
-          agent-shell-mermaid--dark-css
-        agent-shell-mermaid--light-css)))
+          agent-shell-mermaid-dark-css
+        agent-shell-mermaid-light-css)))
 
 (defun agent-shell-mermaid--json-config ()
   "Return Mermaid JSON configuration string with native SVG text enabled."
@@ -143,8 +182,17 @@ When `auto', detects dark vs light background mode from current frame."
     (make-directory agent-shell-mermaid-cache-directory t))
   (let* ((theme (agent-shell-mermaid--resolved-theme))
          (css (agent-shell-mermaid--resolved-css))
-         (hash (secure-hash 'sha256 (format "v3::%s::%s::%s" theme css (string-trim source)))))
+         (hash (secure-hash 'sha256 (format "v4::%s::%s::%s" theme css (string-trim source)))))
     (expand-file-name (format "%s.svg" hash) agent-shell-mermaid-cache-directory)))
+
+;;;###autoload
+(defun agent-shell-mermaid-clear-cache ()
+  "Clear all cached Mermaid SVG diagram files from disk."
+  (interactive)
+  (when (file-directory-p agent-shell-mermaid-cache-directory)
+    (delete-directory agent-shell-mermaid-cache-directory t)
+    (make-directory agent-shell-mermaid-cache-directory t)
+    (message "agent-shell-mermaid: cache cleared (%s)" agent-shell-mermaid-cache-directory)))
 
 ;;; Backend Dispatch Husk
 
