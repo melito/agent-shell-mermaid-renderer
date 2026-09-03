@@ -6,7 +6,7 @@ Render Mermaid diagrams (` ```mermaid `) inline as high-contrast SVG images in [
 
 - **Non-blocking & Asynchronous:** Compiles diagrams in background processes so Emacs and agent streaming never stutter or freeze.
 - **Native SVG Text Rendering:** Disables Mermaid's default HTML `foreignObject` tags (`htmlLabels: false`) so node text, labels, and titles render crisply via Emacs `librsvg`.
-- **Theme-Aware Styling:** Automatically matches dark and light frames with contrast-optimized CSS for node fills, borders, and text.
+- **Emacs Face-Derived Palette:** Automatically derives diagram colors (text, node fills, borders, connectors) from your active Emacs theme faces (`default`, `highlight`, `font-lock-keyword-face`, `shadow`).
 - **On-Disk Caching:** SHA-256 content-hash caching prevents unnecessary recompilations across sessions.
 - **Interactive Source Toggle:** Click on any diagram or press `RET` on the image to flip between the rendered SVG and raw Mermaid code.
 - **Extensible Backend Dispatch:** Defaults to local `mmdc` (`mermaid-cli`), with a `cl-defgeneric` dispatch husk for future backends (e.g. Kroki HTTP, Docker).
@@ -56,49 +56,41 @@ In `~/.config/doom/config.el`:
 
 ---
 
-## Theme Configuration & Customization
+## Theme & Face Customization
 
-### 1. Automatic Theme Detection
-By default, `agent-shell-mermaid-theme` is set to `'auto`. It detects whether your current Emacs theme is dark or light via `(frame-parameter nil 'background-mode)` (with a fallback luminance calculation on the `default` face background).
+### 1. Automatic Palette Inheritance
+By default, the renderer inspects your active Emacs theme and inherits colors directly from standard faces:
 
-### 2. Hardcoding the Mermaid Theme
-You can explicitly lock in a Mermaid theme:
+| Element | Default Face Inheritance |
+| :--- | :--- |
+| **Diagram Text & Labels** | `agent-shell-mermaid-text-face` $\rightarrow$ `default` |
+| **Node Box Background** | `agent-shell-mermaid-node-face` $\rightarrow$ `highlight` |
+| **Node Borders & Accents** | `agent-shell-mermaid-border-face` $\rightarrow$ `font-lock-keyword-face` |
+| **Connector Lines & Arrows** | `agent-shell-mermaid-line-face` $\rightarrow$ `shadow` |
+
+When you switch your Doom / Emacs theme, newly rendered diagrams automatically adopt the new theme's color scheme.
+
+### 2. Customizing Faces
+You can customize the diagram appearance using standard Emacs face configuration (e.g. in Doom's `custom-set-faces!` or `custom-theme-set-faces!`):
+
 ```elisp
-;; Choices: "dark", "default" (light), "neutral", "forest", "base"
+;; In ~/.config/doom/config.el:
+(custom-set-faces!
+  '(agent-shell-mermaid-text-face :foreground "#ffffff")
+  '(agent-shell-mermaid-node-face :background "#1e1e2e")
+  '(agent-shell-mermaid-border-face :foreground "#cba6f7")
+  '(agent-shell-mermaid-line-face :foreground "#89b4fa"))
+```
+
+### 3. Hardcoding the Mermaid CLI Theme
+You can also explicitly set the Mermaid CLI theme via `agent-shell-mermaid-theme`:
+```elisp
+;; Choices: 'auto (default), "dark", "default", "neutral", "forest", "base"
 (setq agent-shell-mermaid-theme "dark")
 ```
 
-### 3. Customizing Dark and Light Mode CSS
-The renderer injects CSS rules to ensure text and nodes contrast against your buffer background. You can adjust the default CSS variables:
-
-```elisp
-;; Customize dark mode diagram colors
-(setq agent-shell-mermaid-dark-css
-      "text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
-  fill: #f0f6fc !important;
-  color: #f0f6fc !important;
-}
-.node rect, .node circle, .node polygon, .node path {
-  fill: #1e1e2e !important;
-  stroke: #cba6f7 !important;
-  stroke-width: 1.5px !important;
-}")
-
-;; Customize light mode diagram colors
-(setq agent-shell-mermaid-light-css
-      "text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
-  fill: #1f2328 !important;
-  color: #1f2328 !important;
-}
-.node rect, .node circle, .node polygon, .node path {
-  fill: #f6f8fa !important;
-  stroke: #0969da !important;
-  stroke-width: 1.5px !important;
-}")
-```
-
-### 4. Full Custom CSS Override
-To apply your own CSS stylesheet regardless of the active theme:
+### 4. Custom CSS Override
+For complete control over the generated SVG stylesheet:
 ```elisp
 (setq agent-shell-mermaid-custom-css
       "text, tspan { fill: #50fa7b !important; font-family: monospace !important; }
@@ -109,9 +101,9 @@ To apply your own CSS stylesheet regardless of the active theme:
 
 ## Cache Management
 
-Rendered SVG diagrams are cached to disk in `~/.config/emacs/agent-shell/mermaid-cache/` (or your Emacs cache directory).
+Rendered SVG diagrams are cached on disk in `~/.config/emacs/agent-shell/mermaid-cache/` (or your Emacs cache directory).
 
-- To purge the cache after modifying your theme or CSS settings:
+- To purge the cache after modifying face or theme settings:
   ```elisp
   M-x agent-shell-mermaid-clear-cache
   ```

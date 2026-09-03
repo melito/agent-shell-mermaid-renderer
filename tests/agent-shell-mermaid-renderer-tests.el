@@ -29,15 +29,15 @@
       (should (equal (agent-shell-mermaid--resolved-theme) "default")))))
 
 (ert-deftest agent-shell-mermaid-test--resolved-css ()
-  "Test resolved CSS behavior (custom vs auto-selected theme CSS)."
+  "Test resolved CSS behavior (custom override vs auto-derived face CSS)."
+  ;; Custom CSS override takes precedence
   (let ((agent-shell-mermaid-custom-css ".custom { color: red; }"))
     (should (equal (agent-shell-mermaid--resolved-css) ".custom { color: red; }")))
+  ;; Auto-derived face CSS generates valid SVG text fill rules
   (let ((agent-shell-mermaid-custom-css nil)
         (agent-shell-mermaid-theme "dark"))
-    (should (string-match-p "fill: #f0f6fc" (agent-shell-mermaid--resolved-css))))
-  (let ((agent-shell-mermaid-custom-css nil)
-        (agent-shell-mermaid-theme "default"))
-    (should (string-match-p "fill: #1f2328" (agent-shell-mermaid--resolved-css)))))
+    (should (string-match-p "fill: " (agent-shell-mermaid--resolved-css)))
+    (should (string-match-p "stroke: " (agent-shell-mermaid--resolved-css)))))
 
 (ert-deftest agent-shell-mermaid-test--json-config ()
   "Test that the generated Mermaid JSON configuration contains required flags."

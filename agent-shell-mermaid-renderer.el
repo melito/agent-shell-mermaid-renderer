@@ -4,14 +4,14 @@
 
 ;; Author: Mel Gray
 ;; Keywords: multimedia, mermaid, agent-shell, llm
-;; Version: 0.4.0
+;; Version: 0.5.0
 ;; Package-Requires: ((emacs "29.1") (agent-shell "0.66.0"))
 ;; URL: https://github.com/melito/agent-shell-mermaid-renderer
 
 ;;; Commentary:
 ;; Renders ```mermaid fenced code blocks in `agent-shell' as inline SVG diagrams.
 ;; Uses an asynchronous backend (defaulting to `mmdc' / mermaid-cli) with disk caching,
-;; native SVG text rendering (htmlLabels: false), and theme-aware CSS injection.
+;; native SVG text rendering (htmlLabels: false), and theme-derived face styling.
 
 ;;; Code:
 
@@ -70,54 +70,12 @@ theme name:
                  (string :tag "Custom Theme Name"))
   :group 'agent-shell-mermaid)
 
-(defcustom agent-shell-mermaid-dark-css
-  "text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
-  fill: #f0f6fc !important;
-  color: #f0f6fc !important;
-}
-.node rect, .node circle, .node polygon, .node path {
-  fill: #21262d !important;
-  stroke: #58a6ff !important;
-  stroke-width: 1.5px !important;
-}
-.actor {
-  fill: #21262d !important;
-  stroke: #58a6ff !important;
-}
-.actor-line, .messageLine0, .messageLine1 {
-  stroke: #8b949e !important;
-}"
-  "CSS applied to diagrams when running on a dark theme."
-  :type 'string
-  :group 'agent-shell-mermaid)
-
-(defcustom agent-shell-mermaid-light-css
-  "text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
-  fill: #1f2328 !important;
-  color: #1f2328 !important;
-}
-.node rect, .node circle, .node polygon, .node path {
-  fill: #f6f8fa !important;
-  stroke: #0969da !important;
-  stroke-width: 1.5px !important;
-}
-.actor {
-  fill: #f6f8fa !important;
-  stroke: #0969da !important;
-}
-.actor-line, .messageLine0, .messageLine1 {
-  stroke: #57606a !important;
-}"
-  "CSS applied to diagrams when running on a light theme."
-  :type 'string
-  :group 'agent-shell-mermaid)
-
 (defcustom agent-shell-mermaid-custom-css nil
   "Optional custom CSS string to inject into diagrams via `--cssFile'.
-When set, overrides both `agent-shell-mermaid-dark-css' and
-`agent-shell-mermaid-light-css'."
-  :type '(choice (const :tag "None (use dark/light theme styles)" nil)
-                 (string :tag "Custom CSS"))
+When nil (default), CSS is dynamically derived from active Emacs faces
+(`agent-shell-mermaid-text-face', `agent-shell-mermaid-node-face', etc.)."
+  :type '(choice (const :tag "Auto-derive from Emacs faces" nil)
+                 (string :tag "Custom CSS override"))
   :group 'agent-shell-mermaid)
 
 (defcustom agent-shell-mermaid-cache-directory
@@ -132,12 +90,34 @@ When set, overrides both `agent-shell-mermaid-dark-css' and
                  (integer :tag "Pixels"))
   :group 'agent-shell-mermaid)
 
+;;; Faces
+
 (defface agent-shell-mermaid-face
   '((t :inherit font-lock-doc-face))
   "Face applied to raw Mermaid code blocks under the diagram overlay."
   :group 'agent-shell-mermaid)
 
-;;; Theme & Cache Helpers
+(defface agent-shell-mermaid-text-face
+  '((t :inherit default))
+  "Face used to style text and labels in Mermaid diagrams."
+  :group 'agent-shell-mermaid)
+
+(defface agent-shell-mermaid-node-face
+  '((t :inherit highlight))
+  "Face used for node background fills in Mermaid diagrams."
+  :group 'agent-shell-mermaid)
+
+(defface agent-shell-mermaid-border-face
+  '((t :inherit font-lock-keyword-face))
+  "Face used for node borders and accents in Mermaid diagrams."
+  :group 'agent-shell-mermaid)
+
+(defface agent-shell-mermaid-line-face
+  '((t :inherit shadow))
+  "Face used for connector lines and arrows in Mermaid diagrams."
+  :group 'agent-shell-mermaid)
+
+;;; Theme & Face-Derived CSS Helpers
 
 (defun agent-shell-mermaid--dark-background-p ()
   "Return non-nil if current frame background is dark."
@@ -154,6 +134,22 @@ When set, overrides both `agent-shell-mermaid-dark-css' and
                32768)
           t)))))
 
+(defun agent-shell-mermaid--face-color (face attribute &optional fallback-face fallback-attribute default-dark default-light)
+  "Extract valid color string from FACE's ATTRIBUTE.
+Falls back to FALLBACK-FACE and FALLBACK-ATTRIBUTE if unspecified.
+If still unspecified, returns DEFAULT-DARK or DEFAULT-LIGHT based
+on frame background."
+  (let ((val (when (facep face)
+               (face-attribute face attribute nil t))))
+    (if (and (stringp val) (not (string-prefix-p "unspecified" val)))
+        val
+      (if (and fallback-face (facep fallback-face))
+          (agent-shell-mermaid--face-color fallback-face (or fallback-attribute attribute)
+                                           nil nil default-dark default-light)
+        (if (agent-shell-mermaid--dark-background-p)
+            (or default-dark "#f0f6fc")
+          (or default-light "#1f2328"))))))
+
 (defun agent-shell-mermaid--resolved-theme ()
   "Resolve theme string (e.g. `\"dark\"', `\"default\"') based on user settings."
   (if (eq agent-shell-mermaid-theme 'auto)
@@ -163,11 +159,37 @@ When set, overrides both `agent-shell-mermaid-dark-css' and
     (format "%s" agent-shell-mermaid-theme)))
 
 (defun agent-shell-mermaid--resolved-css ()
-  "Return active CSS string (custom or auto-selected theme CSS)."
+  "Return active CSS string (custom override or derived from Emacs faces)."
   (or agent-shell-mermaid-custom-css
-      (if (string= (agent-shell-mermaid--resolved-theme) "dark")
-          agent-shell-mermaid-dark-css
-        agent-shell-mermaid-light-css)))
+      (let ((text-fg (agent-shell-mermaid--face-color
+                      'agent-shell-mermaid-text-face :foreground 'default :foreground "#f0f6fc" "#1f2328"))
+            (node-bg (agent-shell-mermaid--face-color
+                      'agent-shell-mermaid-node-face :background 'highlight :background "#21262d" "#f6f8fa"))
+            (node-border (agent-shell-mermaid--face-color
+                          'agent-shell-mermaid-border-face :foreground 'font-lock-keyword-face :foreground "#58a6ff" "#0969da"))
+            (line-fg (agent-shell-mermaid--face-color
+                      'agent-shell-mermaid-line-face :foreground 'shadow :foreground "#8b949e" "#57606a")))
+        (format
+         "text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
+  fill: %s !important;
+  color: %s !important;
+}
+.node rect, .node circle, .node polygon, .node path {
+  fill: %s !important;
+  stroke: %s !important;
+  stroke-width: 1.5px !important;
+}
+.actor {
+  fill: %s !important;
+  stroke: %s !important;
+}
+.actor-line, .messageLine0, .messageLine1, .flowchart-link {
+  stroke: %s !important;
+}"
+         text-fg text-fg
+         node-bg node-border
+         node-bg node-border
+         line-fg))))
 
 (defun agent-shell-mermaid--json-config ()
   "Return Mermaid JSON configuration string with native SVG text enabled."
@@ -184,7 +206,7 @@ When set, overrides both `agent-shell-mermaid-dark-css' and
     (make-directory agent-shell-mermaid-cache-directory t))
   (let* ((theme (agent-shell-mermaid--resolved-theme))
          (css (agent-shell-mermaid--resolved-css))
-         (hash (secure-hash 'sha256 (format "v4::%s::%s::%s" theme css (string-trim source)))))
+         (hash (secure-hash 'sha256 (format "v5::%s::%s::%s" theme css (string-trim source)))))
     (expand-file-name (format "%s.svg" hash) agent-shell-mermaid-cache-directory)))
 
 ;;;###autoload
