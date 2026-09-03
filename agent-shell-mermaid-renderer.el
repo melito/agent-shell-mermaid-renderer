@@ -53,8 +53,9 @@ Choices:
 
 (defcustom agent-shell-mermaid-theme 'auto
   "Mermaid theme to apply when rendering diagrams.
-When `auto', automatically detects dark vs light background mode from current frame.
-You can also hardcode any valid Mermaid theme name:
+When `auto', automatically detects dark vs light background mode
+from the current frame.  You can also hardcode any valid Mermaid
+theme name:
   \"dark\"    - Mermaid dark theme
   \"default\" - Mermaid light theme
   \"neutral\" - Neutral grayscale theme
@@ -113,7 +114,8 @@ You can also hardcode any valid Mermaid theme name:
 
 (defcustom agent-shell-mermaid-custom-css nil
   "Optional custom CSS string to inject into diagrams via `--cssFile'.
-When set, overrides both `agent-shell-mermaid-dark-css' and `agent-shell-mermaid-light-css'."
+When set, overrides both `agent-shell-mermaid-dark-css' and
+`agent-shell-mermaid-light-css'."
   :type '(choice (const :tag "None (use dark/light theme styles)" nil)
                  (string :tag "Custom CSS"))
   :group 'agent-shell-mermaid)
@@ -153,7 +155,7 @@ When set, overrides both `agent-shell-mermaid-dark-css' and `agent-shell-mermaid
           t)))))
 
 (defun agent-shell-mermaid--resolved-theme ()
-  "Resolve theme string ('dark', 'default', etc.) based on user settings."
+  "Resolve theme string (e.g. `\"dark\"', `\"default\"') based on user settings."
   (if (eq agent-shell-mermaid-theme 'auto)
       (if (agent-shell-mermaid--dark-background-p)
           "dark"
@@ -202,7 +204,8 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
 
 ;; Default Backend: Local `mmdc` CLI
 (cl-defmethod agent-shell-mermaid-compile-backend ((_backend (eql mmdc)) source output-file callback)
-  "Asynchronously compile SOURCE to OUTPUT-FILE using `mmdc`."
+  "Asynchronously compile SOURCE to OUTPUT-FILE using `mmdc'.
+Calls CALLBACK with OUTPUT-FILE on success or nil on failure."
   (unless (executable-find agent-shell-mermaid-mmdc-executable)
     (message "agent-shell-mermaid: `%s' executable not found in PATH"
              agent-shell-mermaid-mmdc-executable)
@@ -237,6 +240,8 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
 
 ;; Placeholder Backend: Kroki HTTP (for future expansion)
 (cl-defmethod agent-shell-mermaid-compile-backend ((_backend (eql kroki-http)) _source _output-file callback)
+  "Compile diagram using remote Kroki HTTP backend.
+Calls CALLBACK with nil as it is not yet implemented."
   (message "agent-shell-mermaid: kroki-http backend is not yet implemented")
   (funcall callback nil))
 
@@ -268,7 +273,7 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
             (remove-text-properties s e '(agent-shell-mermaid--saved-image nil))))))))
 
 (defun agent-shell-mermaid--apply-image (buffer start-marker end-marker svg-path source)
-  "Overlay SVG-PATH image over START-MARKER..END-MARKER in BUFFER."
+  "Overlay SVG-PATH image over START-MARKER..END-MARKER in BUFFER for SOURCE."
   (unwind-protect
       (when (and (buffer-live-p buffer) (file-exists-p svg-path))
         (with-current-buffer buffer
@@ -293,7 +298,7 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
     (when (markerp end-marker) (set-marker end-marker nil))))
 
 (defun agent-shell-mermaid--apply-region (buffer start end source)
-  "Mark BUFFER's START..END as mermaid and trigger compilation."
+  "Mark BUFFER's region from START to END as mermaid and compile SOURCE."
   (with-current-buffer buffer
     (add-face-text-property start end 'agent-shell-mermaid-face)
     (add-text-properties
@@ -342,7 +347,7 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
 ;;; Hook & Minor Mode
 
 (defun agent-shell-mermaid-renderer--render-hook (context)
-  "Hook function called by `agent-shell-markdown' on streaming markdown chunks."
+  "Hook function called by `agent-shell-markdown' on streaming markdown CONTEXT."
   (when (and (display-graphic-p)
              (or (bound-and-true-p agent-shell-mermaid-renderer-mode)
                  agent-shell-mermaid-enable))
@@ -352,7 +357,7 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
 (define-minor-mode agent-shell-mermaid-renderer-mode
   "Render Mermaid diagrams in this `agent-shell' buffer's markdown output.
 Enable it per buffer from `agent-shell-mode-hook':
-  (add-hook 'agent-shell-mode-hook #'agent-shell-mermaid-renderer-mode)"
+  (add-hook \\='agent-shell-mode-hook #\\='agent-shell-mermaid-renderer-mode)"
   :lighter nil
   (if agent-shell-mermaid-renderer-mode
       (add-hook 'agent-shell-markdown-render-functions
