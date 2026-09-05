@@ -2,7 +2,7 @@
 
 Render Mermaid diagrams (` ```mermaid `) inline as high-contrast SVG images in [`agent-shell`](https://github.com/xenodium/agent-shell) buffers.
 
-[![rendererd mermaid diagram](assets/diagram.png)]
+![rendererd mermaid diagram](assets/diagram.png)
 
 
 ## Features
