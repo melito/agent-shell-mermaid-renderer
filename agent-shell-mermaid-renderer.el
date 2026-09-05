@@ -42,11 +42,30 @@ Choices:
   `kroki-http'  - Remote Kroki HTTP API (placeholder for future backend)
   `docker'      - Run mermaid-cli inside Docker container (placeholder)"
   :type '(choice (const :tag "Local mermaid-cli (mmdc)" mmdc)
-                 (const :tag "Kroki HTTP API" kroki-http)
-                 (const :tag "Docker mermaid-cli" docker))
+          (const :tag "Kroki HTTP API" kroki-http)
+          (const :tag "Docker mermaid-cli" docker))
   :group 'agent-shell-mermaid)
 
-(defcustom agent-shell-mermaid-mmdc-executable (or (executable-find "mmdc") "mmdc")
+(defun agent-shell-mermaid--find-mmdc ()
+  "Locate `mmdc' executable across standard paths and environment managers."
+  (or (executable-find "mmdc")
+      (seq-find #'file-executable-p
+                (mapcar #'expand-file-name
+                        '("~/.volta/bin/mmdc"
+                          "~/.local/share/pnpm/mmdc"
+                          "~/Library/pnpm/mmdc"
+                          "~/.asdf/shims/mmdc"
+                          "~/.nvm/current/bin/mmdc"
+                          "~/.fnm/current/bin/mmdc"
+                          "~/.npm-global/bin/mmdc"
+                          "~/.bun/bin/mmdc"
+                          "~/.cargo/bin/mmdc"
+                          "~/.local/bin/mmdc"
+                          "/opt/homebrew/bin/mmdc"
+                          "/usr/local/bin/mmdc"
+                          "/usr/bin/mmdc")))))
+
+(defcustom agent-shell-mermaid-mmdc-executable (or (agent-shell-mermaid--find-mmdc) "mmdc")
   "Path to the `mmdc' (mermaid-cli) executable."
   :type 'string
   :group 'agent-shell-mermaid)
@@ -62,12 +81,12 @@ theme name:
   \"forest\"  - Forest green theme
   \"base\"    - Base unstyled theme"
   :type '(choice (const :tag "Auto (detect dark/light from Emacs theme)" auto)
-                 (const :tag "Dark" "dark")
-                 (const :tag "Default (Light)" "default")
-                 (const :tag "Neutral" "neutral")
-                 (const :tag "Forest" "forest")
-                 (const :tag "Base" "base")
-                 (string :tag "Custom Theme Name"))
+          (const :tag "Dark" "dark")
+          (const :tag "Default (Light)" "default")
+          (const :tag "Neutral" "neutral")
+          (const :tag "Forest" "forest")
+          (const :tag "Base" "base")
+          (string :tag "Custom Theme Name"))
   :group 'agent-shell-mermaid)
 
 (defcustom agent-shell-mermaid-custom-css nil
@@ -75,7 +94,7 @@ theme name:
 When nil (default), CSS is dynamically derived from active Emacs faces
   (`agent-shell-mermaid-text-face', `agent-shell-mermaid-node-face', etc.)."
   :type '(choice (const :tag "Auto-derive from Emacs faces" nil)
-                 (string :tag "Custom CSS override"))
+          (string :tag "Custom CSS override"))
   :group 'agent-shell-mermaid)
 
 (defcustom agent-shell-mermaid-cache-directory
@@ -87,7 +106,7 @@ When nil (default), CSS is dynamically derived from active Emacs faces
 (defcustom agent-shell-mermaid-max-width nil
   "Maximum width in pixels for rendered diagrams, or nil for natural size."
   :type '(choice (const :tag "Natural size" nil)
-                 (integer :tag "Pixels"))
+          (integer :tag "Pixels"))
   :group 'agent-shell-mermaid)
 
 ;;; Faces
@@ -98,22 +117,37 @@ When nil (default), CSS is dynamically derived from active Emacs faces
   :group 'agent-shell-mermaid)
 
 (defface agent-shell-mermaid-text-face
-  '((t :inherit default))
+  '((((background dark)) :foreground "#e6edf3")
+    (((background light)) :foreground "#1f2328")
+    (t :inherit default))
   "Face used to style text and labels in Mermaid diagrams."
   :group 'agent-shell-mermaid)
 
 (defface agent-shell-mermaid-node-face
-  '((t :inherit highlight))
+  '((((background dark)) :background "#21262d" :foreground "#e6edf3")
+    (((background light)) :background "#f6f8fa" :foreground "#1f2328")
+    (t :inherit default))
   "Face used for node background fills in Mermaid diagrams."
   :group 'agent-shell-mermaid)
 
+(defface agent-shell-mermaid-note-face
+  '((((background dark)) :background "#1c2128" :foreground "#e6edf3")
+    (((background light)) :background "#fff8c5" :foreground "#1f2328")
+    (t :inherit font-lock-comment-face))
+  "Face used for note boxes and annotations in Mermaid diagrams."
+  :group 'agent-shell-mermaid)
+
 (defface agent-shell-mermaid-border-face
-  '((t :inherit font-lock-keyword-face))
+  '((((background dark)) :foreground "#58a6ff")
+    (((background light)) :foreground "#0969da")
+    (t :inherit font-lock-keyword-face))
   "Face used for node borders and accents in Mermaid diagrams."
   :group 'agent-shell-mermaid)
 
 (defface agent-shell-mermaid-line-face
-  '((t :inherit shadow))
+  '((((background dark)) :foreground "#8b949e")
+    (((background light)) :foreground "#57606a")
+    (t :inherit shadow))
   "Face used for connector lines and arrows in Mermaid diagrams."
   :group 'agent-shell-mermaid)
 
@@ -147,30 +181,42 @@ based on frame background."
           (agent-shell-mermaid--face-color fallback-face (or fallback-attribute attribute)
                                            nil nil default-dark default-light)
         (if (agent-shell-mermaid--dark-background-p)
-            (or default-dark "#f0f6fc")
+            (or default-dark "#e6edf3")
           (or default-light "#1f2328"))))))
 
-(cl-defun agent-shell-mermaid--build-stylesheet (&key text-color node-bg node-border line-color)
+(cl-defun agent-shell-mermaid--build-stylesheet (&key text-color node-bg node-border line-color note-bg note-border note-text)
   "Build CSS stylesheet for Mermaid diagrams given color specifications.
 TEXT-COLOR is applied to labels, titles, and text nodes.
 NODE-BG is applied as the fill color for diagram nodes.
 NODE-BORDER is applied as the stroke color for node boundaries.
-LINE-COLOR is applied to connector lines, arrows, and edges."
+LINE-COLOR is applied to connector lines, arrows, and edges.
+NOTE-BG, NOTE-BORDER, and NOTE-TEXT style sequence diagram notes and annotations."
   (format
-   "text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text {
+   "text, tspan, .flowchartTitleText, .edgeLabel, .actor, .messageText, .label text, .labelText, .loopText {
   fill: %s !important;
   color: %s !important;
 }
-.node rect, .node circle, .node polygon, .node path, .actor {
+.node rect, .node circle, .node polygon, .node path, .actor, rect.actor {
   fill: %s !important;
   stroke: %s !important;
   stroke-width: 1.5px !important;
 }
-.actor-line, .messageLine0, .messageLine1, .flowchart-link {
+.note, rect.note, .note rect {
+  fill: %s !important;
+  stroke: %s !important;
+  stroke-width: 1px !important;
+}
+.noteText, .note text, .note tspan {
+  fill: %s !important;
+  color: %s !important;
+}
+.actor-line, .messageLine0, .messageLine1, .flowchart-link, .loopLine {
   stroke: %s !important;
 }"
    text-color text-color
    node-bg node-border
+   (or note-bg node-bg) (or note-border node-border)
+   (or note-text text-color) (or note-text text-color)
    line-color))
 
 (defun agent-shell-mermaid--resolved-theme ()
@@ -186,13 +232,19 @@ LINE-COLOR is applied to connector lines, arrows, and edges."
   (or agent-shell-mermaid-custom-css
       (agent-shell-mermaid--build-stylesheet
        :text-color  (agent-shell-mermaid--face-color
-                     'agent-shell-mermaid-text-face :foreground 'default :foreground "#f0f6fc" "#1f2328")
+                     'agent-shell-mermaid-text-face :foreground 'default :foreground "#e6edf3" "#1f2328")
        :node-bg     (agent-shell-mermaid--face-color
-                     'agent-shell-mermaid-node-face :background 'highlight :background "#21262d" "#f6f8fa")
+                     'agent-shell-mermaid-node-face :background nil nil "#21262d" "#f6f8fa")
        :node-border (agent-shell-mermaid--face-color
                      'agent-shell-mermaid-border-face :foreground 'font-lock-keyword-face :foreground "#58a6ff" "#0969da")
        :line-color  (agent-shell-mermaid--face-color
-                     'agent-shell-mermaid-line-face :foreground 'shadow :foreground "#8b949e" "#57606a"))))
+                     'agent-shell-mermaid-line-face :foreground 'shadow :foreground "#8b949e" "#57606a")
+       :note-bg     (agent-shell-mermaid--face-color
+                     'agent-shell-mermaid-note-face :background nil nil "#1c2128" "#fff8c5")
+       :note-border (agent-shell-mermaid--face-color
+                     'agent-shell-mermaid-border-face :foreground 'font-lock-keyword-face :foreground "#58a6ff" "#0969da")
+       :note-text   (agent-shell-mermaid--face-color
+                     'agent-shell-mermaid-note-face :foreground 'agent-shell-mermaid-text-face :foreground "#e6edf3" "#1f2328"))))
 
 (defun agent-shell-mermaid--json-config ()
   "Return Mermaid JSON configuration string with native SVG text enabled."
@@ -231,37 +283,42 @@ CALLBACK is called with (OUTPUT-FILE-OR-NIL) upon completion.")
 (cl-defmethod agent-shell-mermaid-compile-backend ((_backend (eql mmdc)) source output-file callback)
   "Asynchronously compile SOURCE to OUTPUT-FILE using `mmdc'.
 Calls CALLBACK with OUTPUT-FILE on success or nil on failure."
-  (unless (executable-find agent-shell-mermaid-mmdc-executable)
-    (message "agent-shell-mermaid: `%s' executable not found in PATH"
-             agent-shell-mermaid-mmdc-executable)
-    (funcall callback nil))
-  (let* ((temp-input (make-temp-file "agent-shell-mmd-" nil ".mmd" source))
-         (temp-css (make-temp-file "agent-shell-css-" nil ".css" (agent-shell-mermaid--resolved-css)))
-         (temp-config (make-temp-file "agent-shell-cfg-" nil ".json" (agent-shell-mermaid--json-config)))
-         (theme (agent-shell-mermaid--resolved-theme))
-         (proc-buffer (generate-new-buffer " *agent-shell-mermaid-mmdc*")))
-    (make-process
-     :name "agent-shell-mermaid-compile"
-     :buffer proc-buffer
-     :command (list agent-shell-mermaid-mmdc-executable
-                    "-i" temp-input
-                    "-o" output-file
-                    "-t" theme
-                    "-c" temp-config
-                    "-C" temp-css
-                    "-b" "transparent")
-     :sentinel (lambda (proc _event)
-                 (when (eq (process-status proc) 'exit)
-                   (delete-file temp-input)
-                   (delete-file temp-css)
-                   (delete-file temp-config)
-                   (if (and (= (process-exit-status proc) 0)
-                            (file-exists-p output-file))
-                       (funcall callback output-file)
-                     (message "agent-shell-mermaid compile failed: %s"
-                              (with-current-buffer (process-buffer proc) (buffer-string)))
-                     (funcall callback nil))
-                   (kill-buffer (process-buffer proc)))))))
+  (let ((mmdc-exec (or (and (file-executable-p agent-shell-mermaid-mmdc-executable)
+                            agent-shell-mermaid-mmdc-executable)
+                       (executable-find agent-shell-mermaid-mmdc-executable)
+                       (agent-shell-mermaid--find-mmdc))))
+    (if (not mmdc-exec)
+        (progn
+          (message "agent-shell-mermaid: `%s' executable not found in PATH"
+                   agent-shell-mermaid-mmdc-executable)
+          (funcall callback nil))
+      (let* ((temp-input (make-temp-file "agent-shell-mmd-" nil ".mmd" source))
+             (temp-css (make-temp-file "agent-shell-css-" nil ".css" (agent-shell-mermaid--resolved-css)))
+             (temp-config (make-temp-file "agent-shell-cfg-" nil ".json" (agent-shell-mermaid--json-config)))
+             (theme (agent-shell-mermaid--resolved-theme))
+             (proc-buffer (generate-new-buffer " *agent-shell-mermaid-mmdc*")))
+        (make-process
+         :name "agent-shell-mermaid-compile"
+         :buffer proc-buffer
+         :command (list mmdc-exec
+                        "-i" temp-input
+                        "-o" output-file
+                        "-t" theme
+                        "-c" temp-config
+                        "-C" temp-css
+                        "-b" "transparent")
+         :sentinel (lambda (proc _event)
+                     (when (eq (process-status proc) 'exit)
+                       (delete-file temp-input)
+                       (delete-file temp-css)
+                       (delete-file temp-config)
+                       (if (and (= (process-exit-status proc) 0)
+                                (file-exists-p output-file))
+                           (funcall callback output-file)
+                         (message "agent-shell-mermaid compile failed: %s"
+                                  (with-current-buffer (process-buffer proc) (buffer-string)))
+                         (funcall callback nil))
+                       (kill-buffer (process-buffer proc)))))))))
 
 ;; Placeholder Backend: Kroki HTTP (for future expansion)
 (cl-defmethod agent-shell-mermaid-compile-backend ((_backend (eql kroki-http)) _source _output-file callback)
