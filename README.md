@@ -2,6 +2,9 @@
 
 Render Mermaid diagrams (` ```mermaid `) inline as high-contrast SVG images in [`agent-shell`](https://github.com/xenodium/agent-shell) buffers.
 
+[rendererd mermaid diagram](assets/diagram.png)
+
+
 ## Features
 
 - **Non-blocking & Asynchronous:** Compiles diagrams in background processes so Emacs and agent streaming never stutter or freeze.
